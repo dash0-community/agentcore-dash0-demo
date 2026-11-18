@@ -1,0 +1,7 @@
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+
+This project is based on the Dash0 observability sample in
+https://github.com/awslabs/agentcore-samples (03-integrations/3p-observability/dash0).
+Modified by Dash0 Inc.: added AgentCore Memory, AgentCore Gateway with Lambda tools,
+trace context propagation to Gateway and Memory, forwarding of AWS-side spans
+to Dash0, and a traffic generator.

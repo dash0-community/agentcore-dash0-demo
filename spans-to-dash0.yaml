@@ -1,0 +1,122 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Forward AWS-side spans (AgentCore Gateway, Memory, Lambda) from the CloudWatch
+  Transaction Search log group aws/spans to Dash0 through Amazon Data Firehose.
+  Follows the Dash0 Hub "AWS CloudWatch Transaction Search" setup.
+
+Parameters:
+  Dash0AuthToken:
+    Type: String
+    NoEcho: true
+    Description: Dash0 auth token with ingest permission for the dataset
+  Dash0SpansEndpoint:
+    Type: String
+    Description: '"AWS CloudWatch Spans via Firehose" endpoint from Dash0 Settings > Endpoints'
+    Default: https://ingress.us-west-2.aws.dash0.com/firehose/cwspans
+  Dash0Dataset:
+    Type: String
+    Default: default
+  NamePrefix:
+    Type: String
+    Default: reinvent-agentcore
+  FilterPattern:
+    Type: String
+    Description: >-
+      Which spans to forward. aws/spans is shared by the whole account and region;
+      an empty pattern forwards everything. Default forwards only this demo's resources.
+    Default: '"reinvent"'
+
+Resources:
+  BackupBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire
+            Status: Enabled
+            ExpirationInDays: 7
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  FirehoseRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: firehose.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals: { "sts:ExternalId": !Ref AWS::AccountId }
+      Policies:
+        - PolicyName: backup
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [s3:PutObject, s3:GetBucketLocation, s3:ListBucket, s3:AbortMultipartUpload]
+                Resource: [!GetAtt BackupBucket.Arn, !Sub "${BackupBucket.Arn}/*"]
+
+  SpansStream:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      DeliveryStreamName: !Sub "${NamePrefix}-spans"
+      DeliveryStreamType: DirectPut
+      HttpEndpointDestinationConfiguration:
+        EndpointConfiguration:
+          Name: Dash0
+          Url: !Ref Dash0SpansEndpoint
+          AccessKey: !Sub "Bearer ${Dash0AuthToken}"
+        RequestConfiguration:
+          CommonAttributes:
+            - AttributeName: dash0-dataset
+              AttributeValue: !Ref Dash0Dataset
+        BufferingHints:
+          IntervalInSeconds: 60
+          SizeInMBs: 1
+        RetryOptions:
+          DurationInSeconds: 300
+        RoleARN: !GetAtt FirehoseRole.Arn
+        S3BackupMode: FailedDataOnly
+        S3Configuration:
+          BucketARN: !GetAtt BackupBucket.Arn
+          RoleARN: !GetAtt FirehoseRole.Arn
+
+  LogsToFirehoseRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: logs.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              StringLike: { "aws:SourceArn": !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*" }
+      Policies:
+        - PolicyName: put-to-firehose
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [firehose:PutRecord, firehose:PutRecordBatch]
+                Resource: !GetAtt SpansStream.Arn
+
+  SpansSubscription:
+    Type: AWS::Logs::SubscriptionFilter
+    Properties:
+      FilterName: !Sub "${NamePrefix}-spans-to-dash0"
+      LogGroupName: aws/spans
+      FilterPattern: !Ref FilterPattern
+      DestinationArn: !GetAtt SpansStream.Arn
+      RoleArn: !GetAtt LogsToFirehoseRole.Arn
+      EmitSystemFields: ["@aws.account", "@aws.region"]
+
+Outputs:
+  DeliveryStream:
+    Value: !Ref SpansStream
