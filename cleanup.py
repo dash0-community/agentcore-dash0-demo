@@ -24,9 +24,11 @@ def attempt(label, fn):
 
 
 cfn = session.client("cloudformation")
-attempt("Deleting stack reinvent-agentcore-spans-to-dash0 (Firehose, subscription filter)",
-        lambda: (cfn.delete_stack(StackName="reinvent-agentcore-spans-to-dash0"),
-                 cfn.get_waiter("stack_delete_complete").wait(StackName="reinvent-agentcore-spans-to-dash0")))
+for stack in ("reinvent-agentcore-spans-to-dash0", "reinvent-agentcore-spans-to-dash0-secondary",
+              "reinvent-agentcore-logs-to-dash0", "reinvent-agentcore-logs-to-dash0-secondary"):
+    attempt(f"Deleting stack {stack} (Firehose, subscription filter)",
+            lambda stack=stack: (cfn.delete_stack(StackName=stack),
+                                 cfn.get_waiter("stack_delete_complete").wait(StackName=stack)))
 
 obs = config.get("observability", {})
 if obs:

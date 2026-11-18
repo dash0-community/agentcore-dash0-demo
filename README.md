@@ -78,9 +78,30 @@ aws cloudformation deploy \
 
 The stack's subscription filter forwards only spans that contain `reinvent`, because `aws/spans` holds the spans of every traced service in the account and region. Change `FilterPattern` to forward more.
 
-### 4. Add the Metrics and Dashboard
+### 4. Add Gateway, Memory, and Lambda Logs
+
+`enable_observability.py` also turned on application log delivery for the Memory and the Gateway, to log groups under `/aws/vendedlogs/bedrock-agentcore/`. Forward those and the Lambda tool's log group to Dash0. Use the **AWS CloudWatch Logs via Firehose** endpoint, your OTLP via HTTP endpoint followed by `/firehose/cwlogs`:
+
+```bash
+aws cloudformation deploy \
+  --template-file logs-to-dash0.yaml \
+  --stack-name reinvent-agentcore-logs-to-dash0 \
+  --capabilities CAPABILITY_IAM \
+  --parameter-overrides \
+    Dash0AuthToken="$DASH0_AUTH_TOKEN" \
+    Dash0LogsEndpoint=https://ingress.us-west-2.aws.dash0.com/firehose/cwlogs \
+    Dash0Dataset=default
+```
+
+Gateway logs carry the trace ID of the request, so in the Dash0 trace view they appear as markers on the Gateway's spans.
+
+### 5. Add the Metrics and Dashboard
 
 In Dash0, open your AWS integration, select the **Metrics** tab, and turn on the **Bedrock-AgentCore** namespace. Then install the **Amazon Bedrock AgentCore** dashboard from the Dash0 Integration Hub.
+
+## Send to a Second Dash0 Organization
+
+To send a copy of the agent's telemetry to a second Dash0 organization, set `DASH0_SECONDARY_AUTH_TOKEN`, `DASH0_SECONDARY_OTLP_ENDPOINT`, and `DASH0_SECONDARY_DATASET` in `.env` and run `deploy.py` again. For the AWS-side spans and logs, deploy each stack a second time with the other organization's token and endpoint, a different `NamePrefix`, and the stack name suffix `-secondary`, for example `reinvent-agentcore-spans-to-dash0-secondary`. CloudWatch allows two subscription filters per log group, so two organizations is the limit.
 
 ## Clean Up
 
@@ -88,7 +109,7 @@ In Dash0, open your AWS integration, select the **Metrics** tab, and turn on the
 python cleanup.py
 ```
 
-`cleanup.py` deletes the spans stack, the tracing deliveries and log groups, the Runtime, Gateway, Memory, Lambda function, IAM roles, and the code bucket. It leaves account-wide settings alone: Transaction Search, the X-Ray destination, and the CloudWatch Logs resource policies.
+`cleanup.py` deletes the spans and logs stacks, the tracing deliveries and log groups, the Runtime, Gateway, Memory, Lambda function, IAM roles, and the code bucket. It leaves account-wide settings alone: Transaction Search, the X-Ray destination, and the CloudWatch Logs resource policies.
 
 ## Files
 
@@ -101,6 +122,7 @@ python cleanup.py
 | `loadgen.py` | Runs conversations on a timer, including failing tool calls |
 | `enable_observability.py` | Turns on tracing and application logs for the Memory and Gateway |
 | `spans-to-dash0.yaml` | CloudFormation stack that forwards `aws/spans` to Dash0 through Firehose |
+| `logs-to-dash0.yaml` | CloudFormation stack that forwards the Gateway, Memory, and Lambda log groups to Dash0 through Firehose |
 | `cleanup.py` | Deletes everything the scripts created |
 
 ## Credits

@@ -304,6 +304,13 @@ def ensure_runtime():
         "MEMORY_ID": config["memory_id"],
         "GATEWAY_URL": config["gateway_url"],
     }
+    # Optional second Dash0 organization that gets a copy of the agent's telemetry
+    if os.getenv("DASH0_SECONDARY_AUTH_TOKEN") and os.getenv("DASH0_SECONDARY_OTLP_ENDPOINT"):
+        env["SECONDARY_OTLP_ENDPOINT"] = os.environ["DASH0_SECONDARY_OTLP_ENDPOINT"].rstrip("/")
+        env["SECONDARY_OTLP_HEADERS"] = (
+            f"Authorization=Bearer%20{os.environ['DASH0_SECONDARY_AUTH_TOKEN']},"
+            f"Dash0-Dataset={os.getenv('DASH0_SECONDARY_DATASET', 'default')}"
+        )
     args = dict(
         agentRuntimeArtifact={
             "codeConfiguration": {

@@ -11,6 +11,8 @@ OTLP backend works. For Dash0 (set by deploy.py on the agent runtime):
     OTEL_SERVICE_NAME            — service name shown in Dash0
     DISABLE_ADOT_OBSERVABILITY   — "true", so AgentCore does not inject its own ADOT setup
 Optional:
+    SECONDARY_OTLP_ENDPOINT      — a second OTLP backend that gets a copy of all telemetry
+    SECONDARY_OTLP_HEADERS       — headers for it, in the OTEL_EXPORTER_OTLP_HEADERS format
     MEMORY_ID                    — AgentCore Memory id
     GATEWAY_URL                  — AgentCore Gateway MCP URL
 """
@@ -40,22 +42,44 @@ if os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"):
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 
+    from urllib.parse import unquote
+
     resource = Resource.create()
 
+    # Optional second destination, for example a second Dash0 organization.
+    secondary = os.getenv("SECONDARY_OTLP_ENDPOINT", "").rstrip("/")
+    secondary_headers = dict(
+        (unquote(k.strip()), unquote(v.strip()))
+        for k, v in (pair.split("=", 1) for pair in os.getenv("SECONDARY_OTLP_HEADERS", "").split(",") if "=" in pair)
+    )
+
+    def exporters(cls, path):
+        found = [cls()]
+        if secondary:
+            found.append(cls(endpoint=f"{secondary}/v1/{path}", headers=secondary_headers))
+        return found
+
     trace_provider = TracerProvider(resource=resource)
-    trace_provider.add_span_processor(SimpleSpanProcessor(OTLPSpanExporter()))
+    for exporter in exporters(OTLPSpanExporter, "traces"):
+        trace_provider.add_span_processor(SimpleSpanProcessor(exporter))
     trace.set_tracer_provider(trace_provider)
 
     metrics.set_meter_provider(
-        MeterProvider(resource=resource, metric_readers=[PeriodicExportingMetricReader(OTLPMetricExporter())])
+        MeterProvider(
+            resource=resource,
+            metric_readers=[PeriodicExportingMetricReader(e) for e in exporters(OTLPMetricExporter, "metrics")],
+        )
     )
 
     log_provider = LoggerProvider(resource=resource)
-    log_provider.add_log_record_processor(BatchLogRecordProcessor(OTLPLogExporter()))
+    for exporter in exporters(OTLPLogExporter, "logs"):
+        log_provider.add_log_record_processor(BatchLogRecordProcessor(exporter))
     set_logger_provider(log_provider)
     logging.getLogger().addHandler(LoggingHandler(level=logging.NOTSET, logger_provider=log_provider))
 
     logger.info("OpenTelemetry configured, exporting to %s", os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"])
+    if secondary:
+        logger.info("Also exporting to %s", secondary)
 else:
     logger.warning("OTEL_EXPORTER_OTLP_ENDPOINT not set, telemetry is not exported")
 

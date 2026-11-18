@@ -1,0 +1,144 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Forward the demo's CloudWatch logs (AgentCore Gateway and Memory application
+  logs, and the Lambda tool's logs) to Dash0 through Amazon Data Firehose.
+  Follows the Dash0 Hub "AWS CloudWatch Logs" setup.
+
+Parameters:
+  Dash0AuthToken:
+    Type: String
+    NoEcho: true
+    Description: Dash0 auth token with ingest permission for the dataset
+  Dash0LogsEndpoint:
+    Type: String
+    Description: '"AWS CloudWatch Logs via Firehose" endpoint, your OTLP via HTTP endpoint followed by /firehose/cwlogs'
+    Default: https://ingress.us-west-2.aws.dash0.com/firehose/cwlogs
+  Dash0Dataset:
+    Type: String
+    Default: default
+  NamePrefix:
+    Type: String
+    Default: reinvent-agentcore
+  GatewayLogGroup:
+    Type: String
+    Default: /aws/vendedlogs/bedrock-agentcore/reinvent-travel-gateway
+  MemoryLogGroup:
+    Type: String
+    Default: /aws/vendedlogs/bedrock-agentcore/reinvent-travel-memory
+  ToolsLogGroup:
+    Type: String
+    Default: /aws/lambda/reinvent-travel-tools
+
+Resources:
+  BackupBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire
+            Status: Enabled
+            ExpirationInDays: 7
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  FirehoseRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: firehose.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals: { "sts:ExternalId": !Ref AWS::AccountId }
+      Policies:
+        - PolicyName: backup
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [s3:PutObject, s3:GetBucketLocation, s3:ListBucket, s3:AbortMultipartUpload]
+                Resource: [!GetAtt BackupBucket.Arn, !Sub "${BackupBucket.Arn}/*"]
+
+  LogsStream:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      DeliveryStreamName: !Sub "${NamePrefix}-logs"
+      DeliveryStreamType: DirectPut
+      HttpEndpointDestinationConfiguration:
+        EndpointConfiguration:
+          Name: Dash0
+          Url: !Ref Dash0LogsEndpoint
+          AccessKey: !Sub "Bearer ${Dash0AuthToken}"
+        RequestConfiguration:
+          CommonAttributes:
+            - AttributeName: dash0-dataset
+              AttributeValue: !Ref Dash0Dataset
+            - AttributeName: cloud.region
+              AttributeValue: !Ref AWS::Region
+        BufferingHints:
+          IntervalInSeconds: 60
+          SizeInMBs: 1
+        RetryOptions:
+          DurationInSeconds: 300
+        RoleARN: !GetAtt FirehoseRole.Arn
+        S3BackupMode: FailedDataOnly
+        S3Configuration:
+          BucketARN: !GetAtt BackupBucket.Arn
+          RoleARN: !GetAtt FirehoseRole.Arn
+
+  LogsToFirehoseRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: logs.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              StringLike: { "aws:SourceArn": !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*" }
+      Policies:
+        - PolicyName: put-to-firehose
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [firehose:PutRecord, firehose:PutRecordBatch]
+                Resource: !GetAtt LogsStream.Arn
+
+  GatewaySubscription:
+    Type: AWS::Logs::SubscriptionFilter
+    Properties:
+      FilterName: !Sub "${NamePrefix}-logs-to-dash0"
+      LogGroupName: !Ref GatewayLogGroup
+      FilterPattern: ""
+      DestinationArn: !GetAtt LogsStream.Arn
+      RoleArn: !GetAtt LogsToFirehoseRole.Arn
+
+  MemorySubscription:
+    Type: AWS::Logs::SubscriptionFilter
+    Properties:
+      FilterName: !Sub "${NamePrefix}-logs-to-dash0"
+      LogGroupName: !Ref MemoryLogGroup
+      FilterPattern: ""
+      DestinationArn: !GetAtt LogsStream.Arn
+      RoleArn: !GetAtt LogsToFirehoseRole.Arn
+
+  ToolsSubscription:
+    Type: AWS::Logs::SubscriptionFilter
+    Properties:
+      FilterName: !Sub "${NamePrefix}-logs-to-dash0"
+      LogGroupName: !Ref ToolsLogGroup
+      FilterPattern: ""
+      DestinationArn: !GetAtt LogsStream.Arn
+      RoleArn: !GetAtt LogsToFirehoseRole.Arn
+
+Outputs:
+  DeliveryStream:
+    Value: !Ref LogsStream
